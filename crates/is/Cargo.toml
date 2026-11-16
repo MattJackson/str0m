@@ -28,3 +28,5 @@ sha1_ = { package = "sha1", version = "0.10", optional = true }
 [dev-dependencies]
 serde_json.workspace = true
 tracing-subscriber.workspace = true
+# The tests draw with no fill installed.
+str0m-proto = { workspace = true, features = ["fastrand"] }

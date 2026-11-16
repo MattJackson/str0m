@@ -98,7 +98,10 @@ regex = "1.11.1"
 rand = "0.9.0"
 
 [features]
-default = ["aws-lc-rs", "examples"]
+default = ["aws-lc-rs", "examples", "fastrand"]
+# Draws with no random fill installed (`str0m_proto::set_fill`) fall back to fastrand; without this
+# feature they panic, so every ICE credential, transaction id and SSRC comes from the installed fill.
+fastrand = ["str0m-proto/fastrand"]
 aws-lc-rs = ["dep:str0m-aws-lc-rs"]
 rust-crypto = ["dep:str0m-rust-crypto"]
 openssl = ["dep:str0m-openssl"]
@@ -129,7 +132,6 @@ drv = ["dep:drv"]
 
 [dependencies]
 tracing.workspace = true
-fastrand.workspace = true
 sctp-proto.workspace = true
 combine.workspace = true
 subtle.workspace = true
@@ -159,6 +161,8 @@ str0m-apple-crypto = { workspace = true, optional = true }
 str0m-wincrypto = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The unit tests draw their own test data from fastrand.
+fastrand.workspace = true
 rouille.workspace = true
 str0m-rust-crypto.workspace = true
 tempfile.workspace = true
