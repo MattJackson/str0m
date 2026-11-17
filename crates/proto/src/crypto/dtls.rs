@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::time::Instant;
-use zeroize::Zeroizing;
+use zeroize::Zeroize;
 
 pub use super::provider::{DtlsInstance, DtlsProvider};
 
@@ -30,11 +30,11 @@ impl fmt::Debug for DtlsCert {
 }
 
 /// Owned SRTP keying material, erased when dropped.
-pub struct KeyingMaterial(Zeroizing<Vec<u8>>);
+pub struct KeyingMaterial(Vec<u8>);
 impl KeyingMaterial {
     /// Copy exported keying material into wiping custody.
     pub fn new(material: &[u8]) -> Self {
-        Self(Zeroizing::new(material.to_vec()))
+        Self(material.to_vec())
     }
 }
 impl Deref for KeyingMaterial {
@@ -46,6 +46,44 @@ impl Deref for KeyingMaterial {
 impl fmt::Debug for KeyingMaterial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("KeyingMaterial")
+    }
+}
+
+impl Drop for KeyingMaterial {
+    fn drop(&mut self) {
+        // Extend only within the owned allocation, then erase it before Vec releases it.
+        self.0.resize(self.0.capacity(), 0);
+        self.0.as_mut_slice().zeroize();
+        #[cfg(test)]
+        drop_tests::observe(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::KeyingMaterial;
+    use std::cell::Cell;
+
+    thread_local! {
+        static ERASED: Cell<Option<(usize, bool)>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn observe(allocation: &[u8]) {
+        ERASED.set(Some((
+            allocation.len(),
+            allocation.iter().all(|byte| *byte == 0),
+        )));
+    }
+
+    #[test]
+    fn drop_erases_the_live_allocation_before_releasing_it() {
+        let mut material = KeyingMaterial::new(&[0xa5; 17]);
+        // Include spare capacity in the observation; no memory is inspected after free.
+        material.0.reserve(32);
+        let capacity = material.0.capacity();
+        ERASED.set(None);
+        drop(material);
+        assert_eq!(ERASED.get(), Some((capacity, true)));
     }
 }
 
