@@ -2133,6 +2133,52 @@ mod test {
         IceAgent::new(IceCreds::new())
     }
 
+    #[test]
+    fn local_preference_binding_and_mapped_peer_reflexive_priority() {
+        let mut agent = new_test_agent();
+        agent.set_local_preference(|_: &Candidate, _: usize| 65535);
+        let remote_creds = IceCreds::new();
+        agent.set_remote_credentials(remote_creds.clone());
+        agent.set_controlling(true);
+        assert_eq!(
+            agent
+                .add_local_candidate(host("1.2.3.4:5000", "udp"))
+                .unwrap()
+                .prio(),
+            2130706431
+        );
+        agent.add_remote_candidate(host("3.4.5.6:5000", "udp"));
+        let now = Instant::now();
+        agent.handle_timeout(now);
+        let transmit = agent.poll_transmit().expect("connectivity check");
+        let request = StunMessage::parse(&transmit.contents).unwrap();
+        assert!(request.is_binding_request());
+        assert_eq!(request.prio(), Some(1862270975));
+        assert_ne!(request.prio(), Some(2130706431));
+        let mapped = ipv4_4();
+        assert!(agent.local_candidates().all(|c| c.addr() != mapped));
+        let response =
+            make_authenticated_stun_reply(request.trans_id(), mapped, &remote_creds.pass);
+        let message = StunMessage::parse(&response).unwrap();
+        assert!(agent.accepts_message(&message));
+        agent.handle_packet(
+            now,
+            StunPacket {
+                proto: Protocol::Udp,
+                source: transmit.destination,
+                destination: transmit.source,
+                message,
+            },
+        );
+        let discovered = agent
+            .local_candidates()
+            .find(|c| c.addr() == mapped)
+            .expect("mapped local peer-reflexive candidate");
+        assert_eq!(discovered.kind(), CandidateKind::PeerReflexive);
+        assert_eq!(discovered.prio(), 1862270975);
+        assert_ne!(discovered.prio(), 2130706431);
+    }
+
     fn ipv4_1() -> SocketAddr {
         "1.2.3.4:5000".parse().unwrap()
     }

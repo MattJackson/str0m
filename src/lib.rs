@@ -2233,6 +2233,75 @@ mod test {
     use super::*;
 
     #[test]
+    fn ice_local_preference_wrapper_and_restart() {
+        init_crypto_default();
+        let now = Instant::now();
+        let mut rtc = Rtc::new(now);
+        rtc.set_ice_local_preference(|_: &Candidate, _: usize| 65535);
+
+        for keep in [None, Some(true), Some(false)] {
+            if let Some(keep) = keep {
+                rtc.ice.ice_restart(ice::IceCreds::new(), keep);
+            }
+            if keep != Some(true) {
+                let registered = rtc
+                    .add_local_candidate(
+                        Candidate::host("198.51.100.1:40000".parse().unwrap(), "udp").unwrap(),
+                    )
+                    .unwrap();
+                assert_eq!(registered.prio(), 2130706431);
+            }
+            let local = rtc.ice.local_candidates().next().unwrap();
+            assert_eq!(local.prio(), 2130706431);
+            let mut change = rtc.sdp_api();
+            if keep.is_none() {
+                change.add_channel("preference".into());
+            } else {
+                // Ensure an SDP change without restarting ICE a second time.
+                change.add_channel(format!("restart-{keep:?}"));
+            }
+            let (offer, _) = change.apply().unwrap();
+            assert!(offer.to_string().lines().any(|line| {
+                line.starts_with("a=candidate:")
+                    && line.contains(" 1 udp 2130706431 198.51.100.1 40000 typ host")
+            }));
+
+            rtc.ice.set_controlling(true);
+            rtc.ice.set_remote_credentials(ice::IceCreds::new());
+            rtc.add_remote_candidate(
+                Candidate::host("198.51.100.2:40000".parse().unwrap(), "udp").unwrap(),
+            );
+            rtc.ice.handle_timeout(now);
+            let transmit = rtc.ice.poll_transmit().expect("connectivity check");
+            let request = ice::StunMessage::parse(&transmit.contents).unwrap();
+            assert!(request.is_binding_request());
+            assert_eq!(request.prio(), Some(1862270975));
+            assert_ne!(request.prio(), Some(2130706431));
+        }
+    }
+
+    #[test]
+    fn ice_local_preference_defaults_unchanged() {
+        init_crypto_default();
+        for (addr, expected) in [
+            ("198.51.100.1:40000", 2130706175),
+            ("[2001:db8::1]:40000", 2130706431),
+        ] {
+            let mut rtc = Rtc::new(Instant::now());
+            let local = rtc
+                .add_local_candidate(Candidate::host(addr.parse().unwrap(), "udp").unwrap())
+                .unwrap();
+            assert_eq!(local.prio(), expected);
+            let mut change = rtc.sdp_api();
+            change.add_channel("default".into());
+            let (offer, _) = change.apply().unwrap();
+            assert!(offer.to_string().lines().any(|line| {
+                line.starts_with("a=candidate:") && line.contains(&format!(" 1 udp {expected} "))
+            }));
+        }
+    }
+
+    #[test]
     fn rtc_is_send() {
         fn is_send<T: Send>(_t: T) {}
         fn is_sync<T: Sync>(_t: T) {}
