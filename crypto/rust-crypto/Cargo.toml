@@ -12,7 +12,7 @@ edition = "2024"
 rust-version = "1.85.0"
 
 [dependencies]
-str0m-proto = { workspace = true, features = ["dtls"] }
+str0m-proto = { workspace = true, features = ["dtls-dimpl"] }
 dimpl = { workspace = true, features = ["rust-crypto", "rcgen"] }
 time.workspace = true
 hmac.workspace = true

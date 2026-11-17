@@ -50,7 +50,7 @@ impl DtlsProvider for OsslDtlsProvider {
         let config = builder
             .with_crypto_provider(crate::dimpl_provider::default_provider())
             .build()
-            .map_err(|e| CryptoError::Other(format!("dimpl config creation failed: {e}")))?;
+            .map_err(|e| CryptoError::DtlsImpl(e.into()))?;
 
         let config = Arc::new(config);
         let dtls = match dtls_version {
@@ -90,19 +90,19 @@ impl DtlsInstance for DimplDtlsInstance {
     }
 
     fn handle_packet(&mut self, packet: &[u8]) -> Result<(), DtlsImplError> {
-        self.dtls.handle_packet(packet)
+        self.dtls.handle_packet(packet).map_err(Into::into)
     }
 
-    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> DtlsOutput<'a> {
-        self.dtls.poll_output(buf)
+    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> Result<DtlsOutput<'a>, DtlsImplError> {
+        self.dtls.poll_output(buf).try_into()
     }
 
     fn handle_timeout(&mut self, now: Instant) -> Result<(), DtlsImplError> {
-        self.dtls.handle_timeout(now)
+        self.dtls.handle_timeout(now).map_err(Into::into)
     }
 
     fn send_application_data(&mut self, data: &[u8]) -> Result<(), DtlsImplError> {
-        self.dtls.send_application_data(data)
+        self.dtls.send_application_data(data).map_err(Into::into)
     }
 
     fn is_active(&self) -> bool {
@@ -110,7 +110,7 @@ impl DtlsInstance for DimplDtlsInstance {
     }
 
     fn protocol_version(&self) -> Option<ProtocolVersion> {
-        self.dtls.protocol_version()
+        self.dtls.protocol_version().map(Into::into)
     }
 
     fn is_closing(&self) -> bool {
@@ -122,6 +122,6 @@ impl DtlsInstance for DimplDtlsInstance {
     }
 
     fn close(&mut self) -> Result<(), DtlsImplError> {
-        self.dtls.close()
+        self.dtls.close().map_err(Into::into)
     }
 }

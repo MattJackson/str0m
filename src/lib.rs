@@ -1659,7 +1659,14 @@ impl Rtc {
         // Poll DTLS output - collect packets, handle events
         let mut just_connected = false;
         loop {
-            match self.dtls.poll_output(&mut self.dtls_buf) {
+            let output = match self.dtls.poll_output(&mut self.dtls_buf) {
+                Ok(output) => output,
+                Err(error) => {
+                    self.disconnect();
+                    return Err(error.into());
+                }
+            };
+            match output {
                 DtlsOutput::Packet(_) => {
                     unreachable!("We don't expect DTLS packets here since we use poll_packet");
                 }

@@ -59,6 +59,7 @@ subtle = "2.0.0"
 arrayvec = "0.7.6"
 serde = { version = "1.0.152", features = ["derive"] }
 dimpl = { version = "0.7.4", default-features = false }
+zeroize = "1.9.0"
 drv = { version = "0.4.3" }
 time = "0.3"
 base64ct = "1"
@@ -141,7 +142,6 @@ time.workspace = true
 base64ct.workspace = true
 
 # DTLS made for str0m (required dependency)
-dimpl.workspace = true
 
 str0m-proto = { workspace = true, features = ["dtls"] }
 is.workspace = true

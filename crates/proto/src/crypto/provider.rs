@@ -179,7 +179,7 @@ pub trait DtlsInstance: CryptoSafe {
     /// Poll for output from the DTLS instance.
     ///
     /// The buffer must be large enough to hold the largest possible DTLS record.
-    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> DtlsOutput<'a>;
+    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> Result<DtlsOutput<'a>, DtlsImplError>;
 
     /// Handle a timeout event.
     fn handle_timeout(&mut self, now: Instant) -> Result<(), DtlsImplError>;

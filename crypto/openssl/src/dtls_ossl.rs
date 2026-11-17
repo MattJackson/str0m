@@ -1,7 +1,7 @@
 //! DTLS implementation using OpenSSL.
 
 use std::collections::VecDeque;
-use std::panic::UnwindSafe;
+use std::panic::{AssertUnwindSafe, UnwindSafe};
 use std::time::{Duration, Instant};
 use std::{io, mem};
 
@@ -13,9 +13,7 @@ use openssl::ssl::{SslOptions, SslStream, SslVerifyMode};
 use openssl::x509::X509;
 
 use str0m_proto::DATAGRAM_MTU_TARGET;
-use str0m_proto::crypto::dtls::{
-    DtlsCert, DtlsCryptoError, DtlsCryptoOperation, KeyingMaterial, ProtocolVersion, SrtpProfile,
-};
+use str0m_proto::crypto::dtls::{DtlsCert, KeyingMaterial, ProtocolVersion, SrtpProfile};
 use str0m_proto::crypto::dtls::{DtlsImplError, DtlsInstance, DtlsOutput, DtlsProvider};
 use str0m_proto::crypto::{CryptoError, DtlsVersion};
 
@@ -86,8 +84,50 @@ impl io::Write for IoBuffer {
 
 const DTLS_KEY_LABEL: &str = "EXTRACTOR-dtls_srtp";
 
-fn dtls_crypto_error(operation: DtlsCryptoOperation) -> DtlsImplError {
-    DtlsImplError::CryptoError(DtlsCryptoError::OperationFailed(operation))
+#[derive(Debug)]
+struct NativeOperationError {
+    operation: &'static str,
+    // The error is immutable diagnostic state, never resumed after an unwind.
+    source: AssertUnwindSafe<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl std::fmt::Display for NativeOperationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpenSSL DTLS {}: {}", self.operation, self.source.0)
+    }
+}
+
+impl std::error::Error for NativeOperationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.0.as_ref())
+    }
+}
+
+fn dtls_crypto_error(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> DtlsImplError {
+    DtlsImplError::Other(Box::new(NativeOperationError {
+        operation,
+        source: AssertUnwindSafe(Box::new(source)),
+    }))
+}
+
+fn shutdown_stream<S: io::Read + io::Write>(
+    stream: &mut SslStream<S>,
+) -> Result<(), DtlsImplError> {
+    match stream.shutdown() {
+        Ok(_) => Ok(()),
+        Err(error)
+            if matches!(
+                error.code(),
+                openssl::ssl::ErrorCode::WANT_READ | openssl::ssl::ErrorCode::WANT_WRITE
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(dtls_crypto_error("close", error)),
+    }
 }
 
 struct TlsStream<S> {
@@ -493,9 +533,9 @@ impl OsslDtlsInstance {
     /// Flush any application data that was queued before the handshake completed.
     fn flush_queued_app_data(&mut self) -> Result<(), DtlsImplError> {
         while let Some(queued) = self.queued_app_data.pop_front() {
-            if self.inner.handle_input(&queued).is_err() {
+            if let Err(error) = self.inner.handle_input(&queued) {
                 self.queued_app_data.push_front(queued);
-                return Err(dtls_crypto_error(DtlsCryptoOperation::Encrypt));
+                return Err(dtls_crypto_error("encrypt", error));
             }
             self.collect_output();
         }
@@ -527,7 +567,7 @@ impl DtlsInstance for OsslDtlsInstance {
                         // but only if we haven't already sent one ourselves.
                         if !self.close_notify_sent {
                             if let State::Established(ref mut stream) = self.inner.tls.state {
-                                let _ = stream.shutdown();
+                                shutdown_stream(stream)?;
                             }
                             self.close_notify_sent = true;
                         }
@@ -543,10 +583,10 @@ impl DtlsInstance for OsslDtlsInstance {
                     if io_err.kind() == std::io::ErrorKind::WouldBlock {
                         // This is fine
                     } else {
-                        return Err(dtls_crypto_error(DtlsCryptoOperation::Decrypt));
+                        return Err(dtls_crypto_error("decrypt", e));
                     }
                 } else {
-                    return Err(dtls_crypto_error(DtlsCryptoOperation::Decrypt));
+                    return Err(dtls_crypto_error("decrypt", e));
                 }
             }
         }
@@ -561,12 +601,12 @@ impl DtlsInstance for OsslDtlsInstance {
         Ok(())
     }
 
-    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> DtlsOutput<'a> {
+    fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> Result<DtlsOutput<'a>, DtlsImplError> {
         // Return pending packets first
         if let Some(packet) = self.pending_packets.pop_front() {
             if packet.len() <= buf.len() {
                 buf[..packet.len()].copy_from_slice(&packet);
-                return DtlsOutput::Packet(&buf[..packet.len()]);
+                return Ok(DtlsOutput::Packet(&buf[..packet.len()]));
             } else {
                 self.pending_packets.push_front(packet);
             }
@@ -574,20 +614,20 @@ impl DtlsInstance for OsslDtlsInstance {
 
         // Return timeout
         if let Some(timeout) = self.next_timeout.take() {
-            return DtlsOutput::Timeout(timeout);
+            return Ok(DtlsOutput::Timeout(timeout));
         }
 
         // Return connected event
         if self.inner.is_connected() && !self.connected_emitted {
             self.connected_emitted = true;
-            return DtlsOutput::Connected;
+            return Ok(DtlsOutput::Connected);
         }
 
         // Return peer certificate DER
         if let Some(cert_der) = self.pending_peer_cert.take() {
             if cert_der.len() <= buf.len() {
                 buf[..cert_der.len()].copy_from_slice(&cert_der);
-                return DtlsOutput::PeerCert(&buf[..cert_der.len()]);
+                return Ok(DtlsOutput::PeerCert(&buf[..cert_der.len()]));
             } else {
                 self.pending_peer_cert = Some(cert_der);
             }
@@ -598,7 +638,7 @@ impl DtlsInstance for OsslDtlsInstance {
             if km_bytes.len() <= buf.len() {
                 buf[..km_bytes.len()].copy_from_slice(&km_bytes);
                 let km = KeyingMaterial::new(&buf[..km_bytes.len()]);
-                return DtlsOutput::KeyingMaterial(km, profile);
+                return Ok(DtlsOutput::KeyingMaterial(km, profile));
             } else {
                 self.pending_keying_material = Some((km_bytes, profile));
             }
@@ -607,21 +647,23 @@ impl DtlsInstance for OsslDtlsInstance {
         // Return close_notify event (after packets so reciprocal alert goes out first)
         if self.close_notify_received && !self.close_notify_emitted {
             self.close_notify_emitted = true;
-            return DtlsOutput::CloseNotify;
+            return Ok(DtlsOutput::CloseNotify);
         }
 
         // Return application data
         if let Some(data) = self.pending_application_data.pop_front() {
             if data.len() <= buf.len() {
                 buf[..data.len()].copy_from_slice(&data);
-                return DtlsOutput::ApplicationData(&buf[..data.len()]);
+                return Ok(DtlsOutput::ApplicationData(&buf[..data.len()]));
             } else {
                 self.pending_application_data.push_front(data);
             }
         }
 
         // No output - return far future timeout
-        DtlsOutput::Timeout(Instant::now() + Duration::from_secs(3600))
+        Ok(DtlsOutput::Timeout(
+            Instant::now() + Duration::from_secs(3600),
+        ))
     }
 
     fn handle_timeout(&mut self, now: Instant) -> Result<(), DtlsImplError> {
@@ -642,8 +684,8 @@ impl DtlsInstance for OsslDtlsInstance {
         self.flush_queued_app_data()?;
 
         // Now send current data
-        if self.inner.handle_input(data).is_err() {
-            return Err(dtls_crypto_error(DtlsCryptoOperation::Encrypt));
+        if let Err(error) = self.inner.handle_input(data) {
+            return Err(dtls_crypto_error("encrypt", error));
         }
 
         self.collect_output();
@@ -668,7 +710,7 @@ impl DtlsInstance for OsslDtlsInstance {
 
     fn close(&mut self) -> Result<(), DtlsImplError> {
         if let State::Established(ref mut stream) = self.inner.tls.state {
-            let _ = stream.shutdown();
+            shutdown_stream(stream)?;
             self.collect_output();
         }
         self.close_notify_sent = true;
@@ -709,5 +751,28 @@ impl DtlsProvider for OsslDtlsProvider {
                     .to_string(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn native_operation_preserves_the_underlying_io_error() {
+        let error = dtls_crypto_error("decrypt", io::Error::from(io::ErrorKind::InvalidData));
+        let native = error
+            .source()
+            .unwrap()
+            .downcast_ref::<NativeOperationError>()
+            .unwrap();
+        assert_eq!(native.operation, "decrypt");
+        let source = native
+            .source()
+            .unwrap()
+            .downcast_ref::<io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::InvalidData);
     }
 }

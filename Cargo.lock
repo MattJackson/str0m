@@ -1939,7 +1939,6 @@ dependencies = [
  "arrayvec",
  "base64ct",
  "combine",
- "dimpl",
  "drv",
  "fastrand",
  "is",
@@ -2027,6 +2026,7 @@ dependencies = [
  "serde",
  "subtle",
  "time",
+ "zeroize",
 ]
 
 [[package]]

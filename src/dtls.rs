@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::crypto::Fingerprint;
 use crate::crypto::Sha256Provider;
-use crate::crypto::dtls::{DtlsCert, DtlsOutput, ProtocolVersion};
+use crate::crypto::dtls::{DtlsCert, DtlsImplError, DtlsOutput, ProtocolVersion};
 use crate::crypto::dtls::{DtlsInstance, DtlsProvider, DtlsVersion};
 use crate::crypto::{CryptoError, DtlsError};
 use crate::io::DatagramSend;
@@ -128,12 +128,12 @@ impl Dtls {
     }
 
     /// Poll for output from the DTLS instance.
-    pub fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> DtlsOutput<'a> {
+    pub fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> Result<DtlsOutput<'a>, DtlsError> {
         if !self.is_inited() {
-            return DtlsOutput::Timeout(not_happening());
+            return Ok(DtlsOutput::Timeout(not_happening()));
         }
 
-        let next = self.instance.poll_output(buf);
+        let next = self.instance.poll_output(buf).map_err(provider_error)?;
 
         if let DtlsOutput::Packet(packet) = next {
             if packet.len() > self.mtu_warn() {
@@ -142,10 +142,10 @@ impl Dtls {
             self.pending_packets.push_back(packet.to_vec().into());
 
             // Return timeout indicating we want another poll straight away
-            return DtlsOutput::Timeout(already_happened());
+            return Ok(DtlsOutput::Timeout(already_happened()));
         }
 
-        next
+        Ok(next)
     }
 
     pub fn poll_packet(&mut self) -> Option<DatagramSend> {
@@ -159,9 +159,7 @@ impl Dtls {
             return Ok(());
         }
 
-        self.instance
-            .handle_packet(packet)
-            .map_err(|e| DtlsError::CryptoError(CryptoError::Other(format!("DTLS error: {}", e))))
+        self.instance.handle_packet(packet).map_err(provider_error)
     }
 
     /// Send application data over DTLS.
@@ -169,7 +167,7 @@ impl Dtls {
         fn make_handshake_pending_err() -> DtlsError {
             DtlsError::Io(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                dimpl::Error::HandshakePending,
+                DtlsImplError::HandshakePending,
             ))
         }
 
@@ -181,8 +179,8 @@ impl Dtls {
         self.instance
             .send_application_data(data)
             .map_err(|e| match e {
-                dimpl::Error::HandshakePending => make_handshake_pending_err(),
-                e => DtlsError::CryptoError(CryptoError::Other(format!("DTLS error: {}", e))),
+                DtlsImplError::HandshakePending => make_handshake_pending_err(),
+                e => provider_error(e),
             })
     }
 
@@ -192,17 +190,17 @@ impl Dtls {
             return Ok(());
         }
 
-        self.instance
-            .handle_timeout(now)
-            .map_err(|e| DtlsError::CryptoError(CryptoError::Other(format!("DTLS error: {}", e))))
+        self.instance.handle_timeout(now).map_err(provider_error)
     }
 
     /// Initiate graceful shutdown by sending a close_notify alert.
     pub fn close(&mut self) -> Result<(), DtlsError> {
-        self.instance
-            .close()
-            .map_err(|e| DtlsError::CryptoError(CryptoError::Other(format!("DTLS error: {}", e))))
+        self.instance.close().map_err(provider_error)
     }
+}
+
+fn provider_error(error: DtlsImplError) -> DtlsError {
+    DtlsError::CryptoError(CryptoError::DtlsImpl(error))
 }
 
 #[cfg(test)]

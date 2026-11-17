@@ -8,15 +8,8 @@ pub use provider::{SupportedAeadAes256Gcm, SupportedAes128CmSha1_80};
 
 /// DTLS related types and traits.
 pub mod dtls {
-    pub use super::provider::dtls::{DtlsInstance, DtlsProvider};
-
-    pub use dimpl::DtlsCertificate as DtlsCert;
-    pub use dimpl::KeyingMaterial;
-    pub use dimpl::ProtocolVersion;
-    pub use dimpl::SrtpProfile;
-    // Note: dimpl::Error is renamed to DtlsImplError to avoid conflict with str0m's DtlsError
     pub use super::provider::DtlsVersion;
-    pub use dimpl::{Error as DtlsImplError, Output as DtlsOutput};
+    pub use super::provider::dtls::*;
 }
 
 #[cfg(any(test, feature = "_internal_test_exports"))]
