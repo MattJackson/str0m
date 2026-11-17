@@ -204,3 +204,119 @@ impl Dtls {
             .map_err(|e| DtlsError::CryptoError(CryptoError::Other(format!("DTLS error: {}", e))))
     }
 }
+
+#[cfg(test)]
+mod provider_contract_tests {
+    use super::*;
+    use crate::crypto::dtls::DtlsImplError;
+    use std::error::Error;
+
+    #[derive(Debug)]
+    struct Refusal;
+    impl std::fmt::Display for Refusal {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("fixture provider refusal")
+        }
+    }
+    impl Error for Refusal {}
+    #[derive(Debug)]
+    struct Provider;
+    impl Sha256Provider for Provider {
+        fn sha256(&self, _: &[u8]) -> [u8; 32] {
+            [7; 32]
+        }
+    }
+    impl DtlsProvider for Provider {
+        fn generate_certificate(&self) -> Option<DtlsCert> {
+            None
+        }
+        fn new_dtls(
+            &self,
+            _: &DtlsCert,
+            _: Instant,
+            _: DtlsVersion,
+            _: Option<usize>,
+        ) -> Result<Box<dyn DtlsInstance>, CryptoError> {
+            Ok(Box::new(Provider))
+        }
+    }
+    fn refusal() -> DtlsImplError {
+        DtlsImplError::Other(Box::new(Refusal))
+    }
+    impl DtlsInstance for Provider {
+        fn set_active(&mut self, _: bool) {}
+        fn handle_packet(&mut self, _: &[u8]) -> Result<(), DtlsImplError> {
+            Err(refusal())
+        }
+        fn poll_output<'a>(&mut self, _: &'a mut [u8]) -> Result<DtlsOutput<'a>, DtlsImplError> {
+            Err(DtlsImplError::UnsupportedProviderOutput)
+        }
+        fn handle_timeout(&mut self, _: Instant) -> Result<(), DtlsImplError> {
+            Err(refusal())
+        }
+        fn send_application_data(&mut self, _: &[u8]) -> Result<(), DtlsImplError> {
+            Err(DtlsImplError::HandshakePending)
+        }
+        fn is_active(&self) -> bool {
+            false
+        }
+        fn protocol_version(&self) -> Option<ProtocolVersion> {
+            None
+        }
+        fn close(&mut self) -> Result<(), DtlsImplError> {
+            Err(refusal())
+        }
+    }
+    fn wrapper() -> Dtls {
+        let cert = DtlsCert {
+            certificate: vec![],
+            private_key: vec![],
+        };
+        let mut dtls = Dtls::new(
+            &cert,
+            &Provider,
+            &Provider,
+            Instant::now(),
+            DtlsVersion::Dtls12,
+            1200..=1400,
+        )
+        .unwrap();
+        dtls.set_active(true);
+        dtls
+    }
+    fn has_source(error: &(dyn Error + 'static)) -> bool {
+        let mut next = Some(error);
+        while let Some(e) = next {
+            if e.downcast_ref::<Refusal>().is_some() {
+                return true;
+            }
+            next = e.source();
+        }
+        false
+    }
+    #[test]
+    fn provider_errors_retain_identity_at_rtc_boundary() {
+        let mut dtls = wrapper();
+        for error in [
+            dtls.handle_receive(&[1]).unwrap_err(),
+            dtls.handle_timeout(Instant::now()).unwrap_err(),
+            dtls.close().unwrap_err(),
+        ] {
+            let error = crate::RtcError::from(error);
+            assert!(has_source(&error));
+        }
+        assert!(is_would_block(&dtls.handle_input(&[1]).unwrap_err()));
+    }
+    #[test]
+    fn refused_poll_never_queues_a_packet() {
+        let mut dtls = wrapper();
+        let error = dtls.poll_output(&mut [0; 128]).unwrap_err();
+        assert!(matches!(
+            error,
+            DtlsError::CryptoError(CryptoError::DtlsImpl(
+                DtlsImplError::UnsupportedProviderOutput
+            ))
+        ));
+        assert!(dtls.poll_packet().is_none());
+    }
+}
