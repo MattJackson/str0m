@@ -1340,6 +1340,19 @@ impl Rtc {
         self.state = RtcState::Closed;
     }
 
+    /// Set the policy used to calculate local ICE candidate preferences.
+    ///
+    /// Configure this before adding the first local candidate. Existing candidates
+    /// are not reprioritized. The callback must return a value in `0..=65535`, and
+    /// callers with multiple local candidates must preserve the uniqueness required
+    /// by ICE for candidates of the same type and component. Values are not validated.
+    ///
+    /// This configures local preference calculation, rather than a fixed serialized
+    /// priority, preserving the distinct host and peer-reflexive type preferences.
+    pub fn set_ice_local_preference(&mut self, preference: impl ice::LocalPreference) {
+        self.ice.set_local_preference(preference);
+    }
+
     /// Add a local ICE candidate. Local candidates are socket addresses the `Rtc` instance
     /// use for communicating with the peer.
     ///
