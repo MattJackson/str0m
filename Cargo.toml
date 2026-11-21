@@ -53,7 +53,7 @@ _str0m_test = { path = "crates/_str0m_test" }
 # Core dependencies
 tracing = "0.1.37"
 fastrand = "2.0.1"
-sctp-proto = "0.10.5"
+sctp-proto = { version = "0.10.5", default-features = false }
 combine = "4.6.6"
 subtle = "2.0.0"
 arrayvec = "0.7.6"
@@ -99,10 +99,13 @@ regex = "1.11.1"
 rand = "0.9.0"
 
 [features]
-default = ["aws-lc-rs", "examples", "fastrand"]
+default = ["aws-lc-rs", "examples", "fastrand", "sctp-rand"]
 # Draws with no random fill installed (`str0m_proto::set_fill`) fall back to fastrand; without this
 # feature they panic, so every ICE credential, transaction id and SSRC comes from the installed fill.
 fastrand = ["str0m-proto/fastrand"]
+# Draws sctp-proto makes with no fill installed (`sctp_proto::set_fill`) fall back to rand; without
+# this feature they panic, so every verification tag, initial TSN and state cookie comes from the fill.
+sctp-rand = ["sctp-proto/rand"]
 aws-lc-rs = ["dep:str0m-aws-lc-rs"]
 rust-crypto = ["dep:str0m-rust-crypto"]
 openssl = ["dep:str0m-openssl"]
@@ -187,3 +190,8 @@ required-features = ["examples"]
 [[example]]
 name = "http-post"
 required-features = ["examples"]
+
+# sctp-proto with `set_fill` and rand behind its default `rand` feature: algesten/sctp-proto#84.
+# Drop when that is released.
+[patch.crates-io]
+sctp-proto = { git = "https://github.com/MattJackson/sctp-proto", rev = "660c47ff8244567b0ea215feffe7a80b9b657987" }
